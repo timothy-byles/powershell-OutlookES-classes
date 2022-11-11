@@ -35,6 +35,13 @@ function CountFlags([enum]$flags) {
 	return $count
 }
 
+function EnumerateFlags([enum]$flags) {
+  while($flags) {
+		$previousFlags = $flags
+		$flags = $flags -band ($flags - 1)
+		$previousFlags -bxor $flags
+	}
+}
 
 # Take a 40 char hex value and return a byte array
 # This allows us to accept various types of input to specify a certificate
@@ -255,16 +262,10 @@ class ESAlgorithmAsn {
 		$defaultCrypt = $CryptAsn[$this.EncryptionAlgorithm]
 		$defaultCrypt.CopyTo($outputArray, $pos)
 		$pos += $defaultCrypt.Length
-		if ($this.OtherEncryptionAlgorithms) {
-			# This isn't slow but I feel like we should be able to return a list of flags without have to check each one
-			# On the other hand I couldn't think of a way to code a function that would loop fewer iterations
-			foreach ($enum in [CryptAlgs].GetEnumValues()) {
-				if ($this.OtherEncryptionAlgorithms -band $enum) {
-					$addBytes = $CryptAsn[$enum]
-					$addBytes.CopyTo($outputArray, $pos)
-					$pos += $addBytes.Length
-				}
-			}
+		foreach ($enum in EnumerateFlags($this.OtherEncryptionAlgorithms)) {
+			$addBytes = $CryptAsn[$enum]
+			$addBytes.CopyTo($outputArray, $pos)
+			$pos += $addBytes.Length
 		}
 		$defaultHash = $HashAsn[$this.HashAlgorithm]
 		$defaultHash.CopyTo($outputArray, $pos)
