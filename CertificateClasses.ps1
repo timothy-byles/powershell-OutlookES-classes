@@ -158,7 +158,7 @@ class ESAlgorithmAsn {
 	}# End constructor ESAlgorithmAsn($stream)
 
 	# I can't imagine this string being longer than 65535 but we're going to code for it anyway
-	[uint64]GetDataLength() {
+	hidden [uint64]GetDataLength() {
 		# Globals aren't available here... who knew...
 		$CryptAsn = $Global:CryptAsn
 		$HashAsn = $Global:HashAsn
@@ -178,7 +178,7 @@ class ESAlgorithmAsn {
 		return $size
 	}
 
-	[uint64]GetHeaderLength($dataLength) {
+	hidden [uint64]GetHeaderLength($dataLength) {
 		# Minimum header size
 		[byte]$size = 2
 
