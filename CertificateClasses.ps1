@@ -24,41 +24,27 @@ function FindInArray([byte[]]$source, [byte[]]$find) {
 
 
 # Very efficient and clever function I found on Stackoverflow, but adapted to PS
+# Moved inline as I don't really need a count, I just need to know if there are more than 1
+#function CountFlags([enum]$flags) {
+#	$count = 0
+#	while ($flags) {
+#		# I think this would work with a bit shift but I haven't tested that way
+#		$flags = $flags -band ($flags - 1)
+#		$count++
+#	}
+#	return $count
+#}
 
-function CountFlags([enum]$flags) {
-	$count = 0
-	while ($flags) {
-		# I think this would work with a bit shift but I haven't tested that way
-		$flags = $flags -band ($flags - 1)
-		$count++
-	}
-	return $count
-}
 
-function EnumerateFlags([enum]$flags) {
-  while($flags) {
-		$previousFlags = $flags
-		$flags = $flags -band ($flags - 1)
-		$previousFlags -bxor $flags
-	}
-}
-
-# Take a 40 char hex value and return a byte array
+# Take a 40 char hex string and return a byte array
 # This allows us to accept various types of input to specify a certificate
-# I looked at a couple different ways to accomplish this
-# I think this works well since the length is always 20
 # Since Windows uses Little-Endian, we have to write it in reverse, then reverse the array
-# It may be possible to add uint160 class but the juice may not be worth the squeeze
 
 function tp2Hash([string]$tp) {
-	$hash = [byte[]]::new(20)
-	([bitconverter]::GetBytes([uint64]('0x' + $tp.SubString(0, 16)))).CopyTo($hash, 12)
-	([bitconverter]::GetBytes([uint64]('0x' + $tp.SubString(16, 16)))).CopyTo($hash, 4)
-	([bitconverter]::GetBytes([uint32]('0x' + $tp.SubString(32)))).CopyTo($hash, 0)
-	[Array]::Reverse($hash)
+	$hash = [bigint]::parse($tp, 512).ToByteArray()
+	if ([bitconverter]::IsLittleEndian) {[array]::Reverse($hash)}
 	return $hash
 }
-
 
 
 ###########################  BEGIN ESAlgorithmAsn custom class  ###########################
@@ -172,7 +158,7 @@ class ESAlgorithmAsn {
 	}# End constructor ESAlgorithmAsn($stream)
 
 	# I can't imagine this string being longer than 65535 but we're going to code for it anyway
-	[uint64]GetLength() {
+	[uint64]GetDataLength() {
 		# Globals aren't available here... who knew...
 		$CryptAsn = $Global:CryptAsn
 		$HashAsn = $Global:HashAsn
@@ -192,93 +178,109 @@ class ESAlgorithmAsn {
 		return $size
 	}
 
+	[uint64]GetHeaderLength($dataLength) {
+		# Minimum header size
+		[byte]$size = 2
+
+		# If the size is 0x80 or greater then the size must be stored in the next n bytes
+		# 0x7F would be stored in this byte. 0x80 would be represented by 0x81,0x80
+
+		# When total length is greater than 0x80, we have to set the greatest bit and use the
+		# rest of this byte to define how many additional bytes are needed to express the total size
+		# For example: if total size is 0xFF00FF then the ASN1 header will look like this
+		# 0x0 = 0x30
+		# 0x1 = 0x83	<- 0x80 || 0x03 for 3 bytes to express EE00FF
+		# 0x30 0x83 0xFF 0x00 0xEE <rest of ASN1 data>
+		if ($dataLength -ge 0x80) {
+			while ($dataLength -ge 1) {$size++; $dataLength /= 256}
+		}
+		return $size
+	}
+
+	[uint64]GetLength() {
+		$size = $this.GetDataLength()
+		$size += $this.GetHeaderLength($size)
+		return $size
+	}
+
 	# Build and return the stream
 	[byte[]]GetBytes() {
 		if ($this.HashAlgorithm -eq 0) {throw 'Must include default hash algorithm'}
 		if ($this.EncryptionAlgorithm -eq 0) {throw 'Must include default encryption algorithm'}
-		if ((CountFlags $this.HashAlgorithm) -ne 1) {throw "Invalid flags for default Hash Algorithm: $this.HashAlgorithm"}
-		if ((CountFlags $this.EncryptionAlgorithm) -ne 1) {throw "Invalid flags for default Encryption Algorithm: $this.EncryptionAlgorithm"}
+
+		# If there is more than one flag set then you can catch it by using -band (flags - 1)
+		if ($this.HashAlgorithm -band ($this.HashAlgorithm - 1)) {
+				throw "Invalid flags for default Hash Algorithm: $this.HashAlgorithm"}
+		if ($this.EncryptionAlgorithm -band ($this.EncryptionAlgorithm - 1)) {
+				throw "Invalid flags for default Encryption Algorithm: $this.EncryptionAlgorithm"}
 
 		# Make sure that Other doesn't contain the default flag
 		$this.OtherEncryptionAlgorithms = $this.OtherEncryptionAlgorithms -band (-bnot $this.EncryptionAlgorithm)
 		$this.OtherHashAlgorithms = $this.OtherHashAlgorithms -band (-bnot $this.HashAlgorithm)
 
+		$outputArray = $null
+		$defaultCrypt = $null
+		$dataSize = $this.GetDataLength()
+
+		# pos and headerSize are used synonymously
+		$pos = $this.GetHeaderLength($dataSize)
+		$outputArray = [byte[]]::new($dataSize + $pos)
+		$outputArray[0] = [byte]0x30
+
+		if ($pos -eq 2) {
+			$outputArray[1] = [byte]$dataSize
+		} else {
+			$outputArray[1] = [byte]($pos - 2) -bxor 0x80
+			
+			$sizeBytes = [bitconverter]::GetBytes($dataSize)
+			if ([bitconverter]::IsLittleEndian) {[array]::Reverse($sizeBytes)}
+
+			# We need to skip leading zeros
+			$iPos = 0
+			# Find the first non-zero byte
+			while ($sizeBytes[$iPos] -eq 0) {$iPos++}
+			$iPos2 = 2
+			# Start at pos 2 and copy elements until end of $sizeBytes
+			while ($iPos -lt $sizeBytes.Length) {$outputArray[$iPos2++] = $sizeBytes[$iPos++]}
+		}
+
+		# Header is complete, now we can compile the ASN1 data
 		$CryptAsn = $Global:CryptAsn
 		$HashAsn = $Global:HashAsn
 
-		$outputArray = $null
-		$pos = 2
-		$defaultCrypt = $null
-		$size = $this.GetLength()
-		$sizeBytes = [bitconverter]::GetBytes($size)
-
-		# This might be easier to read/understand but the code below felt slightly more efficient
-#		if ($size -lt 0x80) {
-#			$outputArray = [byte[]]::new($size + $pos)
-#			$outputArray[0] = [byte]0x30
-#			$outputArray[1] = [byte]$size
-#		} elseif ($size -le 0xFF) {
-#			if ($size -band 0x80) {
-#				$pos++
-#				$outputArray[1] = [byte]0x81
-#			}
-#			$outputArray = [byte[]]::new($size + $pos)
-#			$outputArray[0] = [byte]0x30
-#			$outputArray[2] = [byte]$size
-
-
-		# If the size is 0x80 or greater then the size must be stored in the next n bytes
-		# 0x7F would be stored in this byte. 0x80 would be represented by 0x81,0x80
-		if ($size -le 0xFF) {
-			# If the size is between 0x80 and 0xFF then we only need one more byte
-			if ($size -band 0x80) {$pos++}
-			$outputArray = [byte[]]::new($size + $pos)
-			$outputArray[0] = [byte]0x30
-			if ($size -band 0x80) {$outputArray[1] = [byte]0x81}
-			$outputArray[$pos - 1] = [byte]$size
-		} else {
-			# When total length is greater than 0x80, we have to set the greatest bit and use the
-			# rest of this byte to define how many additional bytes are needed to express the total size
-			# For example: if total size is 0xFF00FF then the ASN1 header will look like this
-			# 0x0 = 0x30
-			# 0x1 = 0x83	<- 0x80 || 0x03 for 3 bytes to express EE00FF
-			# 0x30 0x83 0xFF 0x00 0xEE <rest of ASN1 data>
-
-			# Find the last non-zero byte
-			# If this is running on a Big-Endian platform, this needs to be re-worked to detect endianness
-			$iSize = 0
-			foreach ($i in ($sizeBytes.Length - 1)..0) {if ($sizeBytes[$i]) {$iSize = $i; break}}
-
-			$outputArray = [byte[]]::new($size + $pos + $iSize + 1)
-			$outputArray[0] = [byte]0x30
-			$outputArray[1] = [byte](0x80 + $iSize + 1)
-
-			# ASN1 stores numbers in Big-Endian so we need to reverse the byte order
-			foreach ($i in $iSize..0) {
-				$outputArray[$pos++] = $sizeBytes[$i]	#Set the byte at $pos and then move to the next byte
-			}
-		}
-		# Header is complete, now we can compile the ASN1 data
 		$defaultCrypt = $CryptAsn[$this.EncryptionAlgorithm]
 		$defaultCrypt.CopyTo($outputArray, $pos)
 		$pos += $defaultCrypt.Length
-		foreach ($enum in EnumerateFlags($this.OtherEncryptionAlgorithms)) {
-			$addBytes = $CryptAsn[$enum]
+
+		# This clever bit of code was written by bb-froggy (Christoph Hannebauer) https://github.com/bb-froggy
+		#     based on the CountFlags function above
+		# When I was looking at CountFlags, I thought about attempting this and then talked myself out of it
+		# After seeing it in action, I think it makes sense to include it
+		$enum = $this.OtherEncryptionAlgorithms
+		while ($enum) {
+			$enumLast = $enum
+			# When you subtract 1 and -band to the original, you retain all flags save for the flag of highest value
+			$enum = $enum -band ($enum - 1)
+			# Here we use -bxor to extract the one flag we removed in the last step
+			$addBytes = $CryptAsn[$enumLast -bxor $enum]
 			$addBytes.CopyTo($outputArray, $pos)
 			$pos += $addBytes.Length
 		}
+
 		$defaultHash = $HashAsn[$this.HashAlgorithm]
 		$defaultHash.CopyTo($outputArray, $pos)
 		$pos += $defaultHash.Length
-		if ($this.OtherHashAlgorithms) {
-			foreach ($enum in [HashAlgs].GetEnumValues()) {
-				if ($this.OtherHashAlgorithms -band $enum) {
-					$addBytes = $HashAsn[$enum]
-					$addBytes.CopyTo($outputArray, $pos)
-					$pos += $addBytes.Length
-				}
-			}
+
+		# Again, credit to bb-froggy (Christoph Hannebauer) https://github.com/bb-froggy
+		$enum = $this.OtherHashAlgorithms
+		while ($enum) {
+			$enumLast = $enum
+			$enum = $enum -band ($enum - 1)
+			$addBytes = $HashAsn[$enumLast -bxor $enum]
+			$addBytes.CopyTo($outputArray, $pos)
+			$pos += $addBytes.Length
 		}
+
 		return $outputArray
 
 	}# End method GetBytes
@@ -291,8 +293,10 @@ class ESAlgorithmAsn {
 
 # We've been unable to reverse this data. So far it's the same 20-byte string for every config entry
 # I suspect they could be for Cryptography format as well as security labels
+# My limited tests showed that converting from Object[] -> Byte[] -> BigInt[] was slightly faster than using
+#     a BigInt construtor to directly convert an Object[]
 Set-Variable ESConfigStaticData -Option ReadOnly -value `
-		([byte[]]@(0x1,0x0,0x8,0x0,0x1,0x0,0x0,0x0,0x6,0x0,0x8,0x0,0x1,0x0,0x0,0x0,0x20,0x0,0x8,0x0))
+		([bigint][byte[]](0x1,0x0,0x8,0x0,0x1,0x0,0x0,0x0,0x6,0x0,0x8,0x0,0x1,0x0,0x0,0x0,0x20,0x0,0x8,0x0))
 
 enum ESConfigItemID {
 	AsnHashList = 0x02
@@ -387,8 +391,15 @@ class ESConfigSet {
 	ESConfigSet([byte[]]$blob) {
 		# First we check for the expected static data
 		# If we figure out what this data means and/or how to parse it, this will need to be reworked
-		$staticData = [byte[]]($blob[0..19])
-		if ((FindInArray $staticData $Global:ESConfigStaticData) -ne 0) {throw "Unexpected staticData - $staticData"}
+		$staticData = [bigint]([byte[]]($blob[0..19]))
+		if ($staticData -ne $Global:ESConfigStaticData) {
+			$sExpected = [bitconverter]::ToString($Global:ESConfigStaticData.ToByteArray())
+			$sReceived = [bitconverter]::ToString($staticData.ToByteArray())
+			throw ((
+				'Unexpected staticData',
+				"Expected $sExpected",
+				"Received $sReceived") -join "`n")
+		}
 
 		# Import options flags
 		$this.Options = [bitconverter]::ToUint32($blob, 20)
@@ -469,11 +480,11 @@ class ESConfigSet {
 		# $size += 4	#Header for ASCII name
 		# $size += 4	#ASN1 data header
 
-		$size = 84
+		[uint64]$size = 84
 
 		# Since we need the name in ASCII as well as Unicode and both null-terminated
 		#    we can simply multiply the length with terminator * 3
-		[uint64]$size += ($this.Name.Length + 1) * 3
+		$size += ($this.Name.Length + 1) * 3
 
 		$size += $this.AlgorithmAsn.GetLength()
 
@@ -493,7 +504,7 @@ class ESConfigSet {
 		$outputArray = [byte[]]::New($size)
 
 		# Insert static data
-		$Global:ESConfigstaticData.CopyTo($outputArray, 0)
+		$Global:ESConfigstaticData.ToByteArray().CopyTo($outputArray, 0)
 
 		# Insert options flags
 		([bitconverter]::GetBytes([uint16]($this.Options))).CopyTo($outputArray, 20)
@@ -517,7 +528,7 @@ class ESConfigSet {
 				([ESConfigItemID]::AsnHashList) {$this.AlgorithmAsn.GetBytes()}
 			}
 			([bitconverter]::GetBytes([uint16]($addBytes.Length + 4))).CopyTo($outputArray, $pos + 2)
-			$pos += 2
+			$pos += 4
 			$addBytes.CopyTo($outputArray, $pos)
 			$pos += $addBytes.Length
 		}
