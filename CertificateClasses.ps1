@@ -28,7 +28,7 @@ function FindInArray([byte[]]$source, [byte[]]$find) {
 function CountFlags([enum]$flags) {
 	$count = 0
 	while ($flags) {
-		# I think this would work with a bit shift but I haven't tested tha way
+		# I think this would work with a bit shift but I haven't tested that way
 		$flags = $flags -band ($flags - 1)
 		$count++
 	}
@@ -40,7 +40,7 @@ function CountFlags([enum]$flags) {
 # This allows us to accept various types of input to specify a certificate
 # I looked at a couple different ways to accomplish this
 # I think this works well since the length is always 20
-# Since Windows uses Little-Endian, we have to write it in reverse, then revers the array
+# Since Windows uses Little-Endian, we have to write it in reverse, then reverse the array
 # It may be possible to add uint160 class but the juice may not be worth the squeeze
 
 function tp2Hash([string]$tp) {
@@ -95,7 +95,7 @@ $HashAsn[[HashAlgs]::SHA_256] = [byte[]]@(0x30, 0x0B, 0x06, 0x09, 0x60, 0x86, 0x
 $HashAsn[[HashAlgs]::SHA1] = [byte[]]@(0x30, 0x07, 0x06, 0x05, 0x2B, 0x0E, 0x03, 0x02, 0x1A)
 
 
-# Custom class to handle creating or modifying the ASN1 data that Outlook holds in it's email security settings
+# Custom class to handle creating or modifying the ASN1 data that Outlook holds in its email security settings
 
 class ESAlgorithmAsn {
 	# It's just one contiguous stream but the 'chosen' algs are moved to the head of each section
@@ -230,12 +230,12 @@ class ESAlgorithmAsn {
 			if ($size -band 0x80) {$outputArray[1] = [byte]0x81}
 			$outputArray[$pos - 1] = [byte]$size
 		} else {
-			#When total length is greater than 0x80, we have to set the greatest bit and use the
-			#	rest of this byte to define how many additional bytes are needed to express the total size
-			#	For example: if total size is 0xFF00FF then the ASN1 header will look like this
-			#	0x0 = 0x30
-			#	0x1 = 0x83	<- 0x80 || 0x03 for 3 bytes to express EE00FF
-			#	0x30 0x83 0xFF 0x00 0xEE <rest of ASN1 data>
+			# When total length is greater than 0x80, we have to set the greatest bit and use the
+			# rest of this byte to define how many additional bytes are needed to express the total size
+			# For example: if total size is 0xFF00FF then the ASN1 header will look like this
+			# 0x0 = 0x30
+			# 0x1 = 0x83	<- 0x80 || 0x03 for 3 bytes to express EE00FF
+			# 0x30 0x83 0xFF 0x00 0xEE <rest of ASN1 data>
 
 			# Find the last non-zero byte
 			# If this is running on a Big-Endian platform, this needs to be re-worked to detect endianness
@@ -318,7 +318,7 @@ class ESConfigSet {
 	[ESAlgorithmAsn]$AlgorithmAsn
 
 	# Internal method to update both hash and thumbprint
-	# This is wrapped by another hidden method with three overloads, each of which is wrapped b
+	# This is wrapped by another hidden method with three overloads, each of which is wrapped by
 	#     two public methods for encryption and for signature
 	# I really love how this allowed me to have six public functions with minimal redundant code
 	hidden [void]UpdateCertValues([string]$thumbprint, [byte[]]$hash, [bool]$isSig, [bool]$Force) {
