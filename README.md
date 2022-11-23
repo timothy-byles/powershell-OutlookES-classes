@@ -71,6 +71,9 @@ method SetDefaultEntry((int]$index)
 method SetDefaultEntry([string]$name)
 Mark the designated configset as default
 
+method GetDefaultAllIndex()
+Get the index of the entry with Default1 and Default2
+
 method GetLength()
 Returns the total length of the byte array that would be created with GetBytes()
 
