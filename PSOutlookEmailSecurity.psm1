@@ -594,9 +594,11 @@ class ESConfig {
 
 	# If constructed with no params, generate some default settings
 	ESConfig() {
-		$this.Entries.Add([ESConfigSet]::New('Default Settings'))
-		$this.Entries[0].Options = $this.Entries[0].Options -bor
+		$entry = [ESConfigSet]::New('DefaultSettings')
+		$entry.Options = [ESConfigOption]::SendWithMsgs -bor
 				[ESConfigOption]::Default1 -bor [ESConfigOption]::Default2
+		$this.Entries = [ESConfigSet[]]::New(1)
+		$this.Entries[0] = $entry
 	}
 
 	# Construct a new object and import everything from the blob
@@ -646,25 +648,48 @@ class ESConfig {
 
 	# The default collection is fixed size so we have to generate a new one
 	[void]RemoveEntry([uint32]$index) {
-		$newArray = [ESConfigSet[]]::new($this.Entries.Count - 1)
-		$nextIndex = 0
-		For ($i = 0; $i -lt $this.Entries.Count; $i++) {
-			if ($i -ne $index) {$newArray[$nextIndex] = $this.Entries[$i]}
+		if ($index -lt $this.Entries.Count -and $index -ge 0) {
+			$newArray = [ESConfigSet[]]::new($this.Entries.Count - 1)
+
+			$i1 = 0
+			$i2 = 0
+			while ($i1 -lt $this.Entries.Count) {
+				if ($i1 -eq $index) {$i1++}
+				$newArray[$i2++] = $this.Entries[$i1++]
+			}
+
+			$this.Entries = $newArray
+			$this.ValidateDefault()
+			$this.ValidateNames()
+		} else {
+			throw "$index is out of bounds. Expected to be from 0 to $($this.Entries.Count - 1)"
 		}
-		$this.Entries = $newArray
-		$this.ValidateDefault()
-		$this.ValidateNames()
+	}
+
+	[void]RemoveEntryByName([string]$name) {
+		for ($index = 0; $index -lt $this.Entries.Count; $index++) {
+			if ($this.Entries[$index].Name.Trim() -eq $name) {
+				$this.RemoveEntry($index)
+				break
+			} else {
+				throw 'No ConfigSet found with that name'
+			}
+		}
 	}
 
 	[void]SetDefaultEntry([int]$index) {
-		for ($i = 0; $i -lt $this.Entries.Count; $i++) {
-			if ($i -eq $index) {
-				$this.Entries[$i].Options = $this.Entries[$i].Options -bor
-						[ESConfigOption]::Default1 -bor [ESConfigOption]::Default2
-			} else {
-				$this.Entries[$i].Options = $this.Entries[$i].Options -band ( -bnot
-						([ESConfigOption]::Default1 -bor [ESConfigOption]::Default2))
+		if ($index -lt $this.Entries.Count -and $index -ge 0) {
+			for ($i = 0; $i -lt $this.Entries.Count; $i++) {
+				if ($i -eq $index) {
+					$this.Entries[$i].Options = $this.Entries[$i].Options -bor
+							[ESConfigOption]::Default1 -bor [ESConfigOption]::Default2
+				} else {
+					$this.Entries[$i].Options = $this.Entries[$i].Options -band ( -bnot
+							([ESConfigOption]::Default1 -bor [ESConfigOption]::Default2))
+				}
 			}
+		} else {
+			"$index is out of bounds. Expected to be from 0 to $($this.Entries.Count - 1)"
 		}
 	}
 
@@ -741,15 +766,19 @@ function Set-OutlookESConfig([string]$profileName, [ESConfig]$ESConfig, [switch]
 
 	if (Test-Path $key) {
 		$dest = Get-ItemProperty "$key" -Name 11020355 -EA Silent
-
-		if ($dest) {
-			if (! $noBackup) {
-				rp "$key" -Name 11020355.bak -EA Silent
-				Copy-ItemProperty "$key" -Name 11020355 -Dest 11020355.bak
+		$newConfig = $ESConfig.GetBytes()
+		if ($newConfig) {
+			if ($dest) {
+				if (! $noBackup -and $null -eq (gp "$key" -Name '11020355.bak' -EA Silent)) {
+					$bak = gp "$key" -Name 11020355
+					New-ItemProperty -Path "$key" -Name '11020355.bak' -Value $bak -PropertyType 'Binary' -EA Silent -OutVariable null
+				}
+				sp -Path "$key" -Name 11020355 -Value $ESConfig.GetBytes()
+			} else {
+				New-ItemProperty -Path "$key" -Name 11020355 -Value $newConfig -PropertyType 'Binary' -EA Silent -OutVariable null
 			}
-			sp -Path "$path" -Name "$name" -Value $ESConfig.GetBytes()
 		} else {
-			New-ItemProperty -Path "$key" -Name 11020355 -Value $ESConfig.GetBytes() -PropertyType 'Binary' -EA Silent -OutVariable null
+			throw 'Unable to generate config set'
 		}
 	} else {
 		throw "$profileName is missing cryptography settings. Unable to apply Email Security settings"
